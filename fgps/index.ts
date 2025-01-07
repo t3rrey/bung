@@ -9,12 +9,21 @@ import type {
 import { Server, Socket } from "net";
 import type { GGAPacket } from "nmea-simple";
 
-// Configuration
 const PORT = 3006;
 const HOST = "0.0.0.0";
-const UPDATE_INTERVAL = 1000;
+const UPDATE_INTERVAL = 100;
 const GPS_FIX_TYPE = "rtk";
 const GEOJSON_INPUT_PATH = "./test.geojson";
+
+const LAT_FORMAT = {
+  totalLength: 13,
+  decimalPlaces: 8,
+};
+
+const LON_FORMAT = {
+  totalLength: 14,
+  decimalPlaces: 8,
+};
 
 interface Position {
   latitude: number;
@@ -85,13 +94,18 @@ function convertToNMEA(
   const degrees = Math.floor(absolute);
   const minutes = (absolute - degrees) * 60;
 
-  // Format degrees to 2 digits for lat, 3 for long
+  // Format according to NMEAFORMAT settings
+  const format = isLat ? LAT_FORMAT : LON_FORMAT;
   const degreesStr = degrees.toString().padStart(isLat ? 2 : 3, "0");
-  // Format minutes to always have 2 decimal places and pad with leading zeros if needed
-  const minutesStr = minutes.toFixed(2).padStart(5, "0");
+
+  // Format minutes with specified decimal places
+  const minutesStr = minutes.toFixed(format.decimalPlaces);
+
+  // Ensure total length matches format settings
+  const value = `${degreesStr}${minutesStr}`.padEnd(format.totalLength, "0");
 
   return {
-    value: `${degreesStr}${minutesStr}`,
+    value,
     direction: isLat ? (decimal >= 0 ? "N" : "S") : decimal >= 0 ? "E" : "W",
   };
 }
@@ -114,13 +128,13 @@ function getFakeGGAData(): GGAPacket {
     time: new Date(),
     latitude: position.latitude,
     longitude: position.longitude,
-    fixType: GPS_FIX_TYPE,
+    fixType: GPS_FIX_TYPE, // Always RTK mode
     satellitesInView: position.satellitesInView,
     horizontalDilution: position.horizontalDilution,
-    altitudeMeters: position.altitude,
-    geoidalSeperation: -24.7,
-    differentialAge: undefined,
-    differentialRefStn: undefined,
+    altitudeMeters: 0, // Set to 0 due to pos2d mode
+    geoidalSeperation: 0, // Set to 0 due to pos2d mode
+    differentialAge: 1, // Added for RTK mode
+    differentialRefStn: "0000", // Added for RTK mode
   };
 }
 
@@ -135,15 +149,15 @@ function formatGGAMessage(data: GGAPacket): string {
     lat.direction,
     lon.value,
     lon.direction,
-    data.fixType === "fix" ? "1" : "0",
-    data.satellitesInView.toString(),
+    "4", // Changed to 4 for RTK fixed solution
+    data.satellitesInView.toString().padStart(2, "0"),
     data.horizontalDilution.toFixed(1),
-    data.altitudeMeters.toFixed(1),
+    "0.0", // Altitude always 0 in 2D mode
     "M",
-    data.geoidalSeperation.toFixed(1),
+    "0.0", // Geoidal separation always 0 in 2D mode
     "M",
-    data.differentialAge?.toString() || "",
-    data.differentialRefStn || "",
+    "1", // Differential age for RTK
+    "0000", // Reference station
   ];
 
   const message = fields.join(",");
@@ -195,9 +209,6 @@ server.on("error", (err: Error) => {
 server.listen(PORT, HOST, () => {
   console.log(`NMEA GGA simulator running on port ${PORT}`);
   console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
-  console.log(
-    `Try connecting with netcat or telnet to any of these addresses:`
-  );
 
   const { networkInterfaces } = require("os");
   const nets = networkInterfaces();
@@ -209,6 +220,4 @@ server.listen(PORT, HOST, () => {
       }
     }
   }
-  console.log(`  localhost:${PORT}`);
-  console.log(`  127.0.0.1:${PORT}`);
 });

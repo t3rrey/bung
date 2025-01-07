@@ -1,3 +1,11 @@
 {
-  "cSpell.words": ["fgps", "nmea"]
+  "cSpell.words": [
+    "fgps",
+    "GPGGA",
+    "nmea",
+    "NMEAFORMAT",
+    "ONTIME",
+    "RTKASSIST",
+    "Seperation"
+  ]
 }
