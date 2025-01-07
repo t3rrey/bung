@@ -1,29 +1,18 @@
 import { readFileSync } from "fs";
 import type {
   Feature,
-  FeatureCollection,
   Position as GeoPosition,
   LineString,
   Polygon,
 } from "geojson";
 import { Server, Socket } from "net";
-import type { GGAPacket } from "nmea-simple";
+import { type GGAPacket } from "nmea-simple";
 
 const PORT = 3006;
 const HOST = "0.0.0.0";
-const UPDATE_INTERVAL = 100;
+const UPDATE_INTERVAL = 2000;
 const GPS_FIX_TYPE = "rtk";
-const GEOJSON_INPUT_PATH = "./test.geojson";
-
-const LAT_FORMAT = {
-  totalLength: 13,
-  decimalPlaces: 8,
-};
-
-const LON_FORMAT = {
-  totalLength: 14,
-  decimalPlaces: 8,
-};
+const GEOJSON_INPUT_PATH = "./test2.geojson";
 
 interface Position {
   latitude: number;
@@ -40,19 +29,17 @@ let currentIndex = 0;
 function loadGeoJSON(filePath: string): void {
   try {
     const geojsonContent = readFileSync(filePath, "utf8");
-    const geojson: FeatureCollection = JSON.parse(geojsonContent);
+    const feature: Feature = JSON.parse(geojsonContent);
     coordinates = [];
 
-    geojson.features.forEach((feature: Feature) => {
-      if (feature.geometry.type === "LineString") {
-        const lineString = feature.geometry as LineString;
-        coordinates.push(...lineString.coordinates);
-      } else if (feature.geometry.type === "Polygon") {
-        const polygon = feature.geometry as Polygon;
-        // For polygons, we use the outer ring (first array of coordinates)
-        coordinates.push(...polygon.coordinates[0]);
-      }
-    });
+    if (feature.geometry.type === "LineString") {
+      const lineString = feature.geometry as LineString;
+      coordinates.push(...lineString.coordinates);
+    } else if (feature.geometry.type === "Polygon") {
+      const polygon = feature.geometry as Polygon;
+      // For polygons, we use the outer ring (first array of coordinates)
+      coordinates.push(...polygon.coordinates[0]);
+    }
 
     console.log(`Loaded ${coordinates.length} coordinates from GeoJSON`);
   } catch (error) {
@@ -62,16 +49,6 @@ function loadGeoJSON(filePath: string): void {
 }
 
 function getNextPosition(): Position {
-  if (coordinates.length === 0) {
-    return {
-      latitude: 37.7749,
-      longitude: -122.4194,
-      altitude: 10.0,
-      satellitesInView: 8,
-      horizontalDilution: 1.2,
-    };
-  }
-
   const [longitude, latitude] = coordinates[currentIndex] as [number, number];
 
   // Move to next coordinate, loop back to start if at end
@@ -86,30 +63,48 @@ function getNextPosition(): Position {
   };
 }
 
-function convertToNMEA(
-  decimal: number,
-  isLat: boolean
-): { value: string; direction: string } {
-  const absolute = Math.abs(decimal);
-  const degrees = Math.floor(absolute);
-  const minutes = (absolute - degrees) * 60;
-
-  // Format according to NMEAFORMAT settings
-  const format = isLat ? LAT_FORMAT : LON_FORMAT;
-  const degreesStr = degrees.toString().padStart(isLat ? 2 : 3, "0");
-
-  // Format minutes with specified decimal places
-  const minutesStr = minutes.toFixed(format.decimalPlaces);
-
-  // Ensure total length matches format settings
-  const value = `${degreesStr}${minutesStr}`.padEnd(format.totalLength, "0");
-
-  return {
-    value,
-    direction: isLat ? (decimal >= 0 ? "N" : "S") : decimal >= 0 ? "E" : "W",
-  };
+interface CoordinateResult {
+  coordinate: string;
+  direction: string;
 }
 
+function convertLatLongToDMS(
+  coordinate: number,
+  isLongitude: boolean
+): CoordinateResult {
+  // Determine direction
+  let direction: string;
+  if (isLongitude) {
+    direction = coordinate >= 0 ? "E" : "W";
+  } else {
+    direction = coordinate >= 0 ? "N" : "S";
+  }
+
+  // Convert to absolute value for calculation
+  coordinate = Math.abs(coordinate);
+
+  // Extract degrees (everything before decimal)
+  const degrees = Math.floor(coordinate);
+
+  // Convert decimal degrees to minutes
+  const minutes = (coordinate - degrees) * 60;
+
+  // Format degrees to ensure proper width (2 digits for lat, 3 for long)
+  const degreesStr = isLongitude
+    ? degrees.toString().padStart(3, "0")
+    : degrees.toString().padStart(2, "0");
+
+  // Format minutes to 8 decimal places for high precision
+  const minutesStr = minutes.toFixed(8).padStart(11, "0");
+
+  // Combine degrees and minutes
+  const formattedCoordinate = `${degreesStr}${minutesStr}`;
+
+  return {
+    coordinate: formattedCoordinate,
+    direction,
+  };
+}
 function formatTime(date: Date): string {
   return (
     date.getUTCHours().toString().padStart(2, "0") +
@@ -139,15 +134,15 @@ function getFakeGGAData(): GGAPacket {
 }
 
 function formatGGAMessage(data: GGAPacket): string {
-  const lat = convertToNMEA(data.latitude, true);
-  const lon = convertToNMEA(data.longitude, false);
+  const lat = convertLatLongToDMS(data.latitude, false);
+  const lon = convertLatLongToDMS(data.longitude, true);
 
   const fields = [
     "$GPGGA",
     formatTime(data.time),
-    lat.value,
+    lat.coordinate,
     lat.direction,
-    lon.value,
+    lon.coordinate,
     lon.direction,
     "4", // Changed to 4 for RTK fixed solution
     data.satellitesInView.toString().padStart(2, "0"),
@@ -186,7 +181,6 @@ server.on("connection", (socket: Socket) => {
   const intervalId = setInterval(() => {
     const ggaData = getFakeGGAData();
     const message = formatGGAMessage(ggaData);
-    console.log("GGA EMITTED:", message.trim());
     socket.write(message);
   }, UPDATE_INTERVAL);
 
