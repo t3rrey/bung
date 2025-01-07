@@ -105,6 +105,7 @@ function convertLatLongToDMS(
     direction,
   };
 }
+
 function formatTime(date: Date): string {
   return (
     date.getUTCHours().toString().padStart(2, "0") +
