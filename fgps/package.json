@@ -10,5 +10,8 @@
   },
   "scripts": {
     "start": "bun run --hot index.ts"
+  },
+  "dependencies": {
+    "nmea-simple": "^3.3.0"
   }
 }
