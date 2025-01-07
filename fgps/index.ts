@@ -1,89 +1,102 @@
+import { readFileSync } from "fs";
+import type {
+  Feature,
+  FeatureCollection,
+  Position as GeoPosition,
+  LineString,
+  Polygon,
+} from "geojson";
 import { Server, Socket } from "net";
 import type { GGAPacket } from "nmea-simple";
 
 // Configuration
 const PORT = 3006;
-const HOST = "0.0.0.0"; // Listen on all available network interfaces
-const UPDATE_INTERVAL = 100; // milliseconds
+const HOST = "0.0.0.0";
+const UPDATE_INTERVAL = 1000;
+const GPS_FIX_TYPE = "rtk";
+const GEOJSON_INPUT_PATH = "./test.geojson";
 
-// Initial position and state
-let currentPosition = {
-  latitude: 37.7749,
-  longitude: -122.4194,
-  altitude: 10.0,
-  satellitesInView: 8,
-  horizontalDilution: 1.2,
-};
+interface Position {
+  latitude: number;
+  longitude: number;
+  altitude: number;
+  satellitesInView: number;
+  horizontalDilution: number;
+}
 
-// Function to simulate movement
-const updatePosition = (): void => {
-  // Simulate small random movement
-  currentPosition.latitude += (Math.random() - 0.5) * 0.0001;
-  currentPosition.longitude += (Math.random() - 0.5) * 0.0001;
-  // Simulate small altitude changes
-  currentPosition.altitude += (Math.random() - 0.5) * 0.1;
-  // Occasionally vary satellites and HDOP
-  if (Math.random() < 0.1) {
-    currentPosition.satellitesInView = Math.max(
-      4,
-      Math.min(
-        12,
-        currentPosition.satellitesInView + Math.floor(Math.random() * 3) - 1
-      )
-    );
-    currentPosition.horizontalDilution = Math.max(
-      0.8,
-      Math.min(
-        2.0,
-        currentPosition.horizontalDilution + (Math.random() - 0.5) * 0.1
-      )
-    );
+// Global state for coordinate tracking
+let coordinates: GeoPosition[] = [];
+let currentIndex = 0;
+
+function loadGeoJSON(filePath: string): void {
+  try {
+    const geojsonContent = readFileSync(filePath, "utf8");
+    const geojson: FeatureCollection = JSON.parse(geojsonContent);
+    coordinates = [];
+
+    geojson.features.forEach((feature: Feature) => {
+      if (feature.geometry.type === "LineString") {
+        const lineString = feature.geometry as LineString;
+        coordinates.push(...lineString.coordinates);
+      } else if (feature.geometry.type === "Polygon") {
+        const polygon = feature.geometry as Polygon;
+        // For polygons, we use the outer ring (first array of coordinates)
+        coordinates.push(...polygon.coordinates[0]);
+      }
+    });
+
+    console.log(`Loaded ${coordinates.length} coordinates from GeoJSON`);
+  } catch (error) {
+    console.error("Error loading GeoJSON:", error);
+    coordinates = [[122.4194, 37.7749]]; // Default coordinates - note longitude comes first in GeoJSON
   }
-};
+}
 
-// Function to convert decimal degrees to NMEA format
-const convertToNMEA = (
+function getNextPosition(): Position {
+  if (coordinates.length === 0) {
+    return {
+      latitude: 37.7749,
+      longitude: -122.4194,
+      altitude: 10.0,
+      satellitesInView: 8,
+      horizontalDilution: 1.2,
+    };
+  }
+
+  const [longitude, latitude] = coordinates[currentIndex] as [number, number];
+
+  // Move to next coordinate, loop back to start if at end
+  currentIndex = (currentIndex + 1) % coordinates.length;
+
+  return {
+    latitude, // Note: We're correctly assigning latitude/longitude here
+    longitude,
+    altitude: 10.0 + (Math.random() - 0.5) * 0.1,
+    satellitesInView: Math.floor(Math.random() * 4) + 8,
+    horizontalDilution: 1.0 + Math.random() * 0.4,
+  };
+}
+
+function convertToNMEA(
   decimal: number,
   isLat: boolean
-): { value: string; direction: string } => {
+): { value: string; direction: string } {
   const absolute = Math.abs(decimal);
   const degrees = Math.floor(absolute);
   const minutes = (absolute - degrees) * 60;
-  const format = isLat ? [2, 2] : [3, 2]; // [deg digits, decimal places]
+
+  // Format degrees to 2 digits for lat, 3 for long
+  const degreesStr = degrees.toString().padStart(isLat ? 2 : 3, "0");
+  // Format minutes to always have 2 decimal places and pad with leading zeros if needed
+  const minutesStr = minutes.toFixed(2).padStart(5, "0");
 
   return {
-    value: `${degrees.toString().padStart(format[0], "0")}${minutes
-      .toFixed(format[1])
-      .padStart(7, "0")}`,
+    value: `${degreesStr}${minutesStr}`,
     direction: isLat ? (decimal >= 0 ? "N" : "S") : decimal >= 0 ? "E" : "W",
   };
-};
+}
 
-// Function to generate GGA data
-const getFakeGGAData = (): GGAPacket => {
-  updatePosition();
-
-  const lat = convertToNMEA(currentPosition.latitude, true);
-  const lon = convertToNMEA(currentPosition.longitude, false);
-  const now = new Date();
-
-  return {
-    sentenceId: "GGA",
-    time: now,
-    latitude: currentPosition.latitude,
-    longitude: currentPosition.longitude,
-    fixType: "fix",
-    satellitesInView: currentPosition.satellitesInView,
-    horizontalDilution: currentPosition.horizontalDilution,
-    altitudeMeters: currentPosition.altitude,
-    geoidalSeperation: -24.7, // Typical value for San Francisco
-    differentialAge: undefined,
-    differentialRefStn: undefined,
-  };
-};
-
-// Function to format time for NMEA
-const formatTime = (date: Date): string => {
+function formatTime(date: Date): string {
   return (
     date.getUTCHours().toString().padStart(2, "0") +
     date.getUTCMinutes().toString().padStart(2, "0") +
@@ -91,10 +104,27 @@ const formatTime = (date: Date): string => {
     "." +
     date.getUTCMilliseconds().toString().padStart(3, "0")
   );
-};
+}
 
-// Function to format GGA message
-const formatGGAMessage = (data: GGAPacket): string => {
+function getFakeGGAData(): GGAPacket {
+  const position = getNextPosition();
+
+  return {
+    sentenceId: "GGA",
+    time: new Date(),
+    latitude: position.latitude,
+    longitude: position.longitude,
+    fixType: GPS_FIX_TYPE,
+    satellitesInView: position.satellitesInView,
+    horizontalDilution: position.horizontalDilution,
+    altitudeMeters: position.altitude,
+    geoidalSeperation: -24.7,
+    differentialAge: undefined,
+    differentialRefStn: undefined,
+  };
+}
+
+function formatGGAMessage(data: GGAPacket): string {
   const lat = convertToNMEA(data.latitude, true);
   const lon = convertToNMEA(data.longitude, false);
 
@@ -119,17 +149,18 @@ const formatGGAMessage = (data: GGAPacket): string => {
   const message = fields.join(",");
   const checksum = calculateChecksum(message);
   return `${message}*${checksum}\r\n`;
-};
+}
 
-// Function to calculate NMEA checksum
-const calculateChecksum = (message: string): string => {
+function calculateChecksum(message: string): string {
   let checksum = 0;
-  // Skip the $ at the start
   for (let i = 1; i < message.length; i++) {
     checksum ^= message.charCodeAt(i);
   }
   return checksum.toString(16).toUpperCase().padStart(2, "0");
-};
+}
+
+// Load coordinates at startup
+loadGeoJSON(GEOJSON_INPUT_PATH);
 
 // Create TCP server
 const server = new Server();
@@ -138,27 +169,24 @@ const server = new Server();
 server.on("connection", (socket: Socket) => {
   console.log("Client connected");
 
-  // Set up interval to send GGA messages
   const intervalId = setInterval(() => {
     const ggaData = getFakeGGAData();
     const message = formatGGAMessage(ggaData);
+    console.log("GGA EMITTED:", message.trim());
     socket.write(message);
   }, UPDATE_INTERVAL);
 
-  // Handle client disconnect
   socket.on("close", () => {
     console.log("Client disconnected");
     clearInterval(intervalId);
   });
 
-  // Handle errors
   socket.on("error", (err: Error) => {
     console.error("Socket error:", err.message);
     clearInterval(intervalId);
   });
 });
 
-// Handle server errors
 server.on("error", (err: Error) => {
   console.error("Server error:", err.message);
 });
@@ -166,17 +194,16 @@ server.on("error", (err: Error) => {
 // Start server
 server.listen(PORT, HOST, () => {
   console.log(`NMEA GGA simulator running on port ${PORT}`);
+  console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
   console.log(
     `Try connecting with netcat or telnet to any of these addresses:`
   );
 
-  // Get all network interfaces
   const { networkInterfaces } = require("os");
   const nets = networkInterfaces();
 
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
-      // Skip internal and non-IPv4 addresses
       if (!net.internal && net.family === "IPv4") {
         console.log(`  ${net.address}:${PORT}`);
       }

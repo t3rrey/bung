@@ -3,15 +3,18 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/geojson": "^7946.0.15"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
   },
   "scripts": {
-    "start": "bun run --hot index.ts"
+    "start": "bun run --hot index.ts",
+    "nuke": "rm -rf node_modules && rm -rf bun.lock"
   },
   "dependencies": {
+    "geojson": "^0.5.0",
     "nmea-simple": "^3.3.0"
   }
 }
