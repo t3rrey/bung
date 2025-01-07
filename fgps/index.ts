@@ -8,12 +8,6 @@ import type {
 import { Server, Socket } from "net";
 import { type GGAPacket } from "nmea-simple";
 
-const PORT = 3006;
-const HOST = "0.0.0.0";
-const UPDATE_INTERVAL = 2000;
-const GPS_FIX_TYPE = "rtk";
-const GEOJSON_INPUT_PATH = "./test2.geojson";
-
 interface Position {
   latitude: number;
   longitude: number;
@@ -21,6 +15,17 @@ interface Position {
   satellitesInView: number;
   horizontalDilution: number;
 }
+
+interface CoordinateResult {
+  coordinate: string;
+  direction: string;
+}
+
+const PORT = 3006;
+const HOST = "0.0.0.0";
+const UPDATE_INTERVAL = 2000;
+const GPS_FIX_TYPE = "rtk";
+const GEOJSON_INPUT_PATH = "./test2.geojson";
 
 // Global state for coordinate tracking
 let coordinates: GeoPosition[] = [];
@@ -44,7 +49,7 @@ function loadGeoJSON(filePath: string): void {
     console.log(`Loaded ${coordinates.length} coordinates from GeoJSON`);
   } catch (error) {
     console.error("Error loading GeoJSON:", error);
-    coordinates = [[122.4194, 37.7749]]; // Default coordinates - note longitude comes first in GeoJSON
+    throw error;
   }
 }
 
@@ -55,17 +60,12 @@ function getNextPosition(): Position {
   currentIndex = (currentIndex + 1) % coordinates.length;
 
   return {
-    latitude, // Note: We're correctly assigning latitude/longitude here
+    latitude,
     longitude,
     altitude: 10.0 + (Math.random() - 0.5) * 0.1,
     satellitesInView: Math.floor(Math.random() * 4) + 8,
     horizontalDilution: 1.0 + Math.random() * 0.4,
   };
-}
-
-interface CoordinateResult {
-  coordinate: string;
-  direction: string;
 }
 
 function convertLatLongToDMS(
@@ -199,7 +199,6 @@ server.on("error", (err: Error) => {
   console.error("Server error:", err.message);
 });
 
-// Start server
 server.listen(PORT, HOST, () => {
   console.log(`NMEA GGA simulator running on port ${PORT}`);
   console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
