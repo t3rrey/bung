@@ -21,11 +21,36 @@ interface CoordinateResult {
   direction: string;
 }
 
+interface BestPosData {
+  solutionStatus: string;
+  positionType: string;
+  latitude: number;
+  longitude: number;
+  height: number;
+  undulation: number;
+  datumId: number;
+  latitudeStdDev: number;
+  longitudeStdDev: number;
+  heightStdDev: number;
+  stationId: string;
+  differentialAge: number;
+  solutionAge: number;
+  numTrackedSatellites: number;
+  numSolutionSatellites: number;
+  numSolutionL1Satellites: number;
+  numSolutionMultiSatellites: number;
+  extendedSolutionStatus: number;
+  galileoBeiDouSigMask: number;
+  gpsGlonassSigMask: number;
+}
+
 const PORT = 3006;
 const HOST = "0.0.0.0";
-const UPDATE_INTERVAL = 2000;
 const GPS_FIX_TYPE = "rtk";
-const GEOJSON_INPUT_PATH = "./test2.geojson";
+const GEOJSON_INPUT_PATH = "./test3.geojson";
+const GGA_UPDATE_INTERVAL = 2000; // 2 seconds
+const BESTPOS_UPDATE_INTERVAL = 1000; // 1 second
+const UAL_OPERATIONAL = 0.08;
 
 // Global state for coordinate tracking
 let coordinates: GeoPosition[] = [];
@@ -116,6 +141,14 @@ function formatTime(date: Date): string {
   );
 }
 
+function calculateChecksum(message: string): string {
+  let checksum = 0;
+  for (let i = 1; i < message.length; i++) {
+    checksum ^= message.charCodeAt(i);
+  }
+  return checksum.toString(16).toUpperCase().padStart(2, "0");
+}
+
 function getFakeGGAData(): GGAPacket {
   const position = getNextPosition();
 
@@ -131,6 +164,34 @@ function getFakeGGAData(): GGAPacket {
     geoidalSeperation: 0, // Set to 0 due to pos2d mode
     differentialAge: 1, // Added for RTK mode
     differentialRefStn: "0000", // Added for RTK mode
+  };
+}
+
+function getFakeBestPosData(position: Position): BestPosData {
+  // Calculate position standard deviation based on UAL thresholds
+  const stdDev = Math.random() * UAL_OPERATIONAL; // Usually within operational limits
+
+  return {
+    solutionStatus: "SOL_COMPUTED",
+    positionType: "OPERATIONAL", // Using UAL operational status
+    latitude: position.latitude,
+    longitude: position.longitude,
+    height: 0, // Set to 0 due to pos2d mode
+    undulation: -17.0,
+    datumId: 61, // WGS84
+    latitudeStdDev: 0.0124,
+    longitudeStdDev: 0.0084,
+    heightStdDev: 0, // Zero due to pos2d mode
+    stationId: "TSTR",
+    differentialAge: 1.0,
+    solutionAge: 0.0,
+    numTrackedSatellites: position.satellitesInView,
+    numSolutionSatellites: position.satellitesInView - 1,
+    numSolutionL1Satellites: position.satellitesInView - 2,
+    numSolutionMultiSatellites: position.satellitesInView - 3,
+    extendedSolutionStatus: 0x11, // RTK verified and RTKASSIST active
+    galileoBeiDouSigMask: 0x7f,
+    gpsGlonassSigMask: 0x37,
   };
 }
 
@@ -161,12 +222,55 @@ function formatGGAMessage(data: GGAPacket): string {
   return `${message}*${checksum}\r\n`;
 }
 
-function calculateChecksum(message: string): string {
-  let checksum = 0;
-  for (let i = 1; i < message.length; i++) {
-    checksum ^= message.charCodeAt(i);
-  }
-  return checksum.toString(16).toUpperCase().padStart(2, "0");
+function formatBestPosMessage(data: BestPosData): string {
+  const now = new Date();
+  const gpsWeek = Math.floor(
+    (now.getTime() - new Date("1980-01-06").getTime()) /
+      (7 * 24 * 60 * 60 * 1000)
+  );
+  const gpsSeconds =
+    now.getUTCHours() * 3600 +
+    now.getUTCMinutes() * 60 +
+    now.getUTCSeconds() +
+    now.getUTCMilliseconds() / 1000;
+
+  const fields = [
+    "#BESTPOSA",
+    "USB1",
+    "0",
+    "58.5",
+    "FINESTEERING",
+    gpsWeek.toString(),
+    gpsSeconds.toFixed(3),
+    "02000020",
+    "cdba",
+    "16809",
+    data.solutionStatus,
+    data.positionType,
+    data.latitude.toFixed(11),
+    data.longitude.toFixed(11),
+    data.height.toFixed(4),
+    data.undulation.toFixed(4),
+    "WGS84",
+    data.latitudeStdDev.toFixed(4),
+    data.longitudeStdDev.toFixed(4),
+    data.heightStdDev.toFixed(4),
+    `"${data.stationId}"`,
+    data.differentialAge.toFixed(3),
+    data.solutionAge.toFixed(3),
+    data.numTrackedSatellites,
+    data.numSolutionSatellites,
+    data.numSolutionL1Satellites,
+    data.numSolutionMultiSatellites,
+    "00",
+    data.extendedSolutionStatus.toString(16).padStart(2, "0"),
+    data.galileoBeiDouSigMask.toString(16).padStart(2, "0"),
+    data.gpsGlonassSigMask.toString(16).padStart(2, "0"),
+  ];
+
+  const message = fields.join(",");
+  const checksum = calculateChecksum(message);
+  return `${message}*${checksum}\r\n`;
 }
 
 // Load coordinates at startup
@@ -179,20 +283,30 @@ const server = new Server();
 server.on("connection", (socket: Socket) => {
   console.log("Client connected");
 
-  const intervalId = setInterval(() => {
+  const ggaIntervalId = setInterval(() => {
     const ggaData = getFakeGGAData();
     const message = formatGGAMessage(ggaData);
+    console.log(message);
     socket.write(message);
-  }, UPDATE_INTERVAL);
+  }, GGA_UPDATE_INTERVAL);
+
+  const bestposIntervalId = setInterval(() => {
+    const position = getNextPosition();
+    const bestPosData = getFakeBestPosData(position);
+    const bestPosMessage = formatBestPosMessage(bestPosData);
+    socket.write(bestPosMessage);
+  }, BESTPOS_UPDATE_INTERVAL);
 
   socket.on("close", () => {
     console.log("Client disconnected");
-    clearInterval(intervalId);
+    clearInterval(ggaIntervalId);
+    clearInterval(bestposIntervalId);
   });
 
   socket.on("error", (err: Error) => {
     console.error("Socket error:", err.message);
-    clearInterval(intervalId);
+    clearInterval(ggaIntervalId);
+    clearInterval(bestposIntervalId);
   });
 });
 
