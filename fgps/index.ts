@@ -56,6 +56,9 @@ const UAL_OPERATIONAL = 0.08;
 let coordinates: GeoPosition[] = [];
 let currentIndex = 0;
 
+// server state
+let paused = true;
+
 function loadGeoJSON(filePath: string): void {
   try {
     const geojsonContent = readFileSync(filePath, "utf8");
@@ -283,19 +286,41 @@ const server = new Server();
 server.on("connection", (socket: Socket) => {
   console.log("Client connected");
 
+  // A flag that tells whether the message stream is paused.
+
   const ggaIntervalId = setInterval(() => {
-    const ggaData = getFakeGGAData();
-    const message = formatGGAMessage(ggaData);
-    console.log(message);
-    socket.write(message);
+    if (!paused) {
+      const ggaData = getFakeGGAData();
+      const message = formatGGAMessage(ggaData);
+      console.log("Sending GGA:", message.trim());
+      socket.write(message);
+    }
   }, GGA_UPDATE_INTERVAL);
 
   const bestposIntervalId = setInterval(() => {
-    const position = getNextPosition();
-    const bestPosData = getFakeBestPosData(position);
-    const bestPosMessage = formatBestPosMessage(bestPosData);
-    socket.write(bestPosMessage);
+    if (!paused) {
+      const position = getNextPosition();
+      const bestPosData = getFakeBestPosData(position);
+      const bestPosMessage = formatBestPosMessage(bestPosData);
+      console.log("Sending BESTPOS:", bestPosMessage.trim());
+      socket.write(bestPosMessage);
+    }
   }, BESTPOS_UPDATE_INTERVAL);
+
+  // Listen for commands (play/pause) from the client.
+  socket.on("data", (data: Buffer) => {
+    const command = data.toString().trim().toLowerCase();
+    console.log("Received command:", command);
+    if (command === "pause") {
+      paused = true;
+      socket.write("ACK: Stream paused\r\n");
+    } else if (command === "play") {
+      paused = false;
+      socket.write("ACK: Stream resumed\r\n");
+    } else {
+      socket.write("ACK: Unknown command\r\n");
+    }
+  });
 
   socket.on("close", () => {
     console.log("Client disconnected");
