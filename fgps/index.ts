@@ -7,6 +7,8 @@ import type {
 } from "geojson";
 import { Server, Socket } from "net";
 import { type GGAPacket } from "nmea-simple";
+import * as readline from "readline";
+import { createInterface } from "readline";
 
 interface Position {
   latitude: number;
@@ -58,6 +60,7 @@ let currentIndex = 0;
 
 // server state
 let paused = true;
+let speedFactor = 1.0; // Multiplier for update intervals
 
 function loadGeoJSON(filePath: string): void {
   try {
@@ -281,36 +284,90 @@ loadGeoJSON(GEOJSON_INPUT_PATH);
 
 // Create TCP server
 const server = new Server();
+const connectedSockets: Socket[] = [];
+
+// Function to clear console and show current status - defined at global level
+const clearAndShowStatus = (message: string) => {
+  console.clear();
+  console.log(`NMEA GGA simulator running on port ${PORT}`);
+  console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
+
+  // Show current status
+  console.log(`\nStatus: ${paused ? "⏸️ PAUSED" : "▶️ PLAYING"}`);
+  console.log(`Speed: ${speedFactor.toFixed(2)}x`);
+  console.log(`Connected clients: ${connectedSockets.length}`);
+
+  // Display command menu
+  console.log("\n=== Interactive Commands ===");
+  console.log("p - Play (start sending GPS data)");
+  console.log("s - Stop (pause sending GPS data)");
+  console.log("q - Quit the application");
+  console.log("↑ - Speed up GPS data");
+  console.log("↓ - Slow down GPS data");
+  console.log("===========================\n");
+
+  // Show message if provided
+  if (message) {
+    console.log(`${message}\n`);
+  }
+
+  console.log("fgps> ");
+};
 
 // Handle client connections
 server.on("connection", (socket: Socket) => {
   console.log("Client connected");
 
+  // Add socket to connected sockets array
+  connectedSockets.push(socket);
+
   // A flag that tells whether the message stream is paused.
 
-  const ggaIntervalId = setInterval(() => {
-    if (!paused) {
-      const ggaData = getFakeGGAData();
-      const message = formatGGAMessage(ggaData);
-      console.log("Sending GGA:", message.trim());
-      socket.write(message);
-    }
-  }, GGA_UPDATE_INTERVAL);
+  let ggaIntervalId: NodeJS.Timer;
+  let bestposIntervalId: NodeJS.Timer;
 
-  const bestposIntervalId = setInterval(() => {
-    if (!paused) {
-      const position = getNextPosition();
-      const bestPosData = getFakeBestPosData(position);
-      const bestPosMessage = formatBestPosMessage(bestPosData);
-      console.log("Sending BESTPOS:", bestPosMessage.trim());
-      socket.write(bestPosMessage);
-    }
-  }, BESTPOS_UPDATE_INTERVAL);
+  // Function to update timer intervals based on speed factor
+  const updateIntervals = () => {
+    // Clear existing intervals
+    clearInterval(ggaIntervalId);
+    clearInterval(bestposIntervalId);
+
+    // Set new intervals with adjusted timing
+    ggaIntervalId = setInterval(() => {
+      if (!paused) {
+        const ggaData = getFakeGGAData();
+        const message = formatGGAMessage(ggaData);
+        console.log("Sending GGA:", message.trim());
+        socket.write(message);
+      }
+    }, Math.round(GGA_UPDATE_INTERVAL / speedFactor));
+
+    bestposIntervalId = setInterval(() => {
+      if (!paused) {
+        const position = getNextPosition();
+        const bestPosData = getFakeBestPosData(position);
+        const bestPosMessage = formatBestPosMessage(bestPosData);
+        console.log("Sending BESTPOS:", bestPosMessage.trim());
+        socket.write(bestPosMessage);
+      }
+    }, Math.round(BESTPOS_UPDATE_INTERVAL / speedFactor));
+  };
+
+  // Add updateIntervals function to socket for external access
+  (socket as any)._updateIntervals = updateIntervals;
+
+  // Initialize intervals
+  updateIntervals();
 
   // Listen for commands (play/pause) from the client.
   socket.on("data", (data: Buffer) => {
     const command = data.toString().trim().toLowerCase();
-    console.log("Received command:", command);
+
+    // Update UI to show received command
+    if (connectedSockets.length > 0) {
+      clearAndShowStatus(`Received command from client: ${command}`);
+    }
+
     if (command === "pause") {
       paused = true;
       socket.write("ACK: Stream paused\r\n");
@@ -326,6 +383,12 @@ server.on("connection", (socket: Socket) => {
     console.log("Client disconnected");
     clearInterval(ggaIntervalId);
     clearInterval(bestposIntervalId);
+
+    // Remove socket from connected sockets array
+    const index = connectedSockets.indexOf(socket);
+    if (index !== -1) {
+      connectedSockets.splice(index, 1);
+    }
   });
 
   socket.on("error", (err: Error) => {
@@ -353,4 +416,99 @@ server.listen(PORT, HOST, () => {
       }
     }
   }
+
+  // Set up interactive terminal
+  console.log("\n=== Interactive Commands ===");
+  console.log("p - Play (start sending GPS data)");
+  console.log("s - Stop (pause sending GPS data)");
+  console.log("q - Quit the application");
+  console.log("↑ - Speed up GPS data");
+  console.log("↓ - Slow down GPS data");
+  console.log("===========================\n");
+
+  // Create readline interface
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "fgps> ",
+  });
+
+  // Enable keypress events
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+
+  // Reference the global clearAndShowStatus function
+  const localClearAndShowStatus = (message: string) => {
+    // Call the global function
+    clearAndShowStatus(message);
+    // Ensure the prompt is displayed
+    rl.prompt();
+  };
+
+  // Handle keypress events for all key commands
+  process.stdin.on("keypress", (str, key) => {
+    if (key.name === "up") {
+      speedFactor = Math.min(speedFactor * 1.25, 4.0);
+
+      // Update all connected clients with new speed
+      if (connectedSockets.length > 0) {
+        connectedSockets.forEach((clientSocket) => {
+          // Force update intervals on all clients
+          const socketAsAny = clientSocket as any;
+          if (socketAsAny._updateIntervals) {
+            socketAsAny._updateIntervals();
+          }
+        });
+      }
+
+      localClearAndShowStatus(`Speed increased to ${speedFactor.toFixed(2)}x`);
+    } else if (key.name === "down") {
+      speedFactor = Math.max(speedFactor * 0.8, 0.25);
+
+      // Update all connected clients with new speed
+      if (connectedSockets.length > 0) {
+        connectedSockets.forEach((clientSocket) => {
+          // Force update intervals on all clients
+          const socketAsAny = clientSocket as any;
+          if (socketAsAny._updateIntervals) {
+            socketAsAny._updateIntervals();
+          }
+        });
+      }
+
+      localClearAndShowStatus(`Speed decreased to ${speedFactor.toFixed(2)}x`);
+    } else if (str === "p") {
+      paused = false;
+      localClearAndShowStatus("Stream started");
+    } else if (str === "s") {
+      paused = true;
+      localClearAndShowStatus("Stream paused");
+    } else if (str === "q") {
+      console.clear();
+      console.log("Shutting down server...");
+      server.close();
+      process.exit(0);
+    } else if (key.ctrl && key.name === "c") {
+      console.clear();
+      console.log("Exiting FGPS simulator");
+      process.exit();
+    } else {
+      // For any other key, just refresh the display
+      localClearAndShowStatus("");
+    }
+  });
+
+  // Initial status display
+  localClearAndShowStatus("System ready");
+
+  // Just handle empty lines and any other characters
+  rl.on("line", (line) => {
+    // Clear screen and show status on any Enter key press
+    localClearAndShowStatus("");
+  }).on("close", () => {
+    console.log("Exiting FGPS simulator");
+    process.exit(0);
+  });
 });
