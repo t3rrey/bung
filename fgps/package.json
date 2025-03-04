@@ -11,7 +11,8 @@
   },
   "scripts": {
     "start": "bun run --hot index.ts",
-    "nuke": "rm -rf node_modules && rm -rf bun.lock"
+    "nuke": "rm -rf node_modules && rm -rf bun.lock",
+    "test": "bun test"
   },
   "dependencies": {
     "geojson": "^0.5.0",

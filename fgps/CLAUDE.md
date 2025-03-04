@@ -6,6 +6,7 @@
 - **Install dependencies**: `bun install`
 - **Clean and reinstall**: `bun run nuke`
 - **Type checking**: `bun --bun tsc --noEmit`
+- **Run tests**: `bun test` or `bun run test`
 
 ## Code Style Guidelines
 

@@ -7,10 +7,23 @@ import type {
 } from "geojson";
 import { Server, Socket } from "net";
 import { type GGAPacket } from "nmea-simple";
+import { networkInterfaces } from "os";
 import * as readline from "readline";
 import { createInterface } from "readline";
 
-interface Position {
+// Constants
+export const PORT = 3006;
+export const HOST = "0.0.0.0";
+export const GPS_FIX_TYPE = "rtk";
+export const GEOJSON_INPUT_PATH = "./geojson-data/input.geojson";
+export const GGA_UPDATE_INTERVAL = 2000; // 2 seconds
+export const BESTPOS_UPDATE_INTERVAL = 1000; // 1 second
+export const UAL_OPERATIONAL = 0.08;
+export const MAX_SPEED_FACTOR = 4.0;
+export const MIN_SPEED_FACTOR = 0.25;
+
+// Types
+export interface Position {
   latitude: number;
   longitude: number;
   altitude: number;
@@ -18,12 +31,12 @@ interface Position {
   horizontalDilution: number;
 }
 
-interface CoordinateResult {
+export interface CoordinateResult {
   coordinate: string;
   direction: string;
 }
 
-interface BestPosData {
+export interface BestPosData {
   solutionStatus: string;
   positionType: string;
   latitude: number;
@@ -46,23 +59,19 @@ interface BestPosData {
   gpsGlonassSigMask: number;
 }
 
-const PORT = 3006;
-const HOST = "0.0.0.0";
-const GPS_FIX_TYPE = "rtk";
-const GEOJSON_INPUT_PATH = "./test3.geojson";
-const GGA_UPDATE_INTERVAL = 2000; // 2 seconds
-const BESTPOS_UPDATE_INTERVAL = 1000; // 1 second
-const UAL_OPERATIONAL = 0.08;
+interface ExtendedSocket extends Socket {
+  _updateIntervals: () => void;
+}
 
-// Global state for coordinate tracking
+// Global state
 let coordinates: GeoPosition[] = [];
 let currentIndex = 0;
-
-// server state
 let paused = true;
-let speedFactor = 1.0; // Multiplier for update intervals
+let speedFactor = 1.0;
+const connectedSockets: ExtendedSocket[] = [];
 
-function loadGeoJSON(filePath: string): void {
+// GeoJSON handling
+export function loadGeoJSON(filePath: string): void {
   try {
     const geojsonContent = readFileSync(filePath, "utf8");
     const feature: Feature = JSON.parse(geojsonContent);
@@ -84,7 +93,7 @@ function loadGeoJSON(filePath: string): void {
   }
 }
 
-function getNextPosition(): Position {
+export function getNextPosition(): Position {
   const [longitude, latitude] = coordinates[currentIndex] as [number, number];
 
   // Move to next coordinate, loop back to start if at end
@@ -99,36 +108,28 @@ function getNextPosition(): Position {
   };
 }
 
-function convertLatLongToDMS(
+// Coordinate formatting utilities
+export function convertLatLongToDMS(
   coordinate: number,
   isLongitude: boolean
 ): CoordinateResult {
-  // Determine direction
-  let direction: string;
-  if (isLongitude) {
-    direction = coordinate >= 0 ? "E" : "W";
-  } else {
-    direction = coordinate >= 0 ? "N" : "S";
-  }
+  const direction = isLongitude
+    ? coordinate >= 0
+      ? "E"
+      : "W"
+    : coordinate >= 0
+    ? "N"
+    : "S";
 
-  // Convert to absolute value for calculation
   coordinate = Math.abs(coordinate);
-
-  // Extract degrees (everything before decimal)
   const degrees = Math.floor(coordinate);
-
-  // Convert decimal degrees to minutes
   const minutes = (coordinate - degrees) * 60;
 
-  // Format degrees to ensure proper width (2 digits for lat, 3 for long)
   const degreesStr = isLongitude
     ? degrees.toString().padStart(3, "0")
     : degrees.toString().padStart(2, "0");
 
-  // Format minutes to 8 decimal places for high precision
   const minutesStr = minutes.toFixed(8).padStart(11, "0");
-
-  // Combine degrees and minutes
   const formattedCoordinate = `${degreesStr}${minutesStr}`;
 
   return {
@@ -137,7 +138,7 @@ function convertLatLongToDMS(
   };
 }
 
-function formatTime(date: Date): string {
+export function formatTime(date: Date): string {
   return (
     date.getUTCHours().toString().padStart(2, "0") +
     date.getUTCMinutes().toString().padStart(2, "0") +
@@ -147,7 +148,7 @@ function formatTime(date: Date): string {
   );
 }
 
-function calculateChecksum(message: string): string {
+export function calculateChecksum(message: string): string {
   let checksum = 0;
   for (let i = 1; i < message.length; i++) {
     checksum ^= message.charCodeAt(i);
@@ -155,7 +156,8 @@ function calculateChecksum(message: string): string {
   return checksum.toString(16).toUpperCase().padStart(2, "0");
 }
 
-function getFakeGGAData(): GGAPacket {
+// GPS data generation
+export function getFakeGGAData(): GGAPacket {
   const position = getNextPosition();
 
   return {
@@ -163,31 +165,28 @@ function getFakeGGAData(): GGAPacket {
     time: new Date(),
     latitude: position.latitude,
     longitude: position.longitude,
-    fixType: GPS_FIX_TYPE, // Always RTK mode
+    fixType: GPS_FIX_TYPE,
     satellitesInView: position.satellitesInView,
     horizontalDilution: position.horizontalDilution,
-    altitudeMeters: 0, // Set to 0 due to pos2d mode
-    geoidalSeperation: 0, // Set to 0 due to pos2d mode
-    differentialAge: 1, // Added for RTK mode
-    differentialRefStn: "0000", // Added for RTK mode
+    altitudeMeters: 0,
+    geoidalSeperation: 0,
+    differentialAge: 1,
+    differentialRefStn: "0000",
   };
 }
 
-function getFakeBestPosData(position: Position): BestPosData {
-  // Calculate position standard deviation based on UAL thresholds
-  const stdDev = Math.random() * UAL_OPERATIONAL; // Usually within operational limits
-
+export function getFakeBestPosData(position: Position): BestPosData {
   return {
     solutionStatus: "SOL_COMPUTED",
-    positionType: "OPERATIONAL", // Using UAL operational status
+    positionType: "OPERATIONAL",
     latitude: position.latitude,
     longitude: position.longitude,
-    height: 0, // Set to 0 due to pos2d mode
+    height: 0,
     undulation: -17.0,
     datumId: 61, // WGS84
     latitudeStdDev: 0.0124,
     longitudeStdDev: 0.0084,
-    heightStdDev: 0, // Zero due to pos2d mode
+    heightStdDev: 0,
     stationId: "TSTR",
     differentialAge: 1.0,
     solutionAge: 0.0,
@@ -201,7 +200,8 @@ function getFakeBestPosData(position: Position): BestPosData {
   };
 }
 
-function formatGGAMessage(data: GGAPacket): string {
+// Message formatting
+export function formatGGAMessage(data: GGAPacket): string {
   const lat = convertLatLongToDMS(data.latitude, false);
   const lon = convertLatLongToDMS(data.longitude, true);
 
@@ -212,12 +212,12 @@ function formatGGAMessage(data: GGAPacket): string {
     lat.direction,
     lon.coordinate,
     lon.direction,
-    "4", // Changed to 4 for RTK fixed solution
+    "4", // RTK fixed solution
     data.satellitesInView.toString().padStart(2, "0"),
     data.horizontalDilution.toFixed(1),
-    "0.0", // Altitude always 0 in 2D mode
+    "0.0", // Altitude (2D mode)
     "M",
-    "0.0", // Geoidal separation always 0 in 2D mode
+    "0.0", // Geoidal separation (2D mode)
     "M",
     "1", // Differential age for RTK
     "0000", // Reference station
@@ -228,7 +228,7 @@ function formatGGAMessage(data: GGAPacket): string {
   return `${message}*${checksum}\r\n`;
 }
 
-function formatBestPosMessage(data: BestPosData): string {
+export function formatBestPosMessage(data: BestPosData): string {
   const now = new Date();
   const gpsWeek = Math.floor(
     (now.getTime() - new Date("1980-01-06").getTime()) /
@@ -279,25 +279,16 @@ function formatBestPosMessage(data: BestPosData): string {
   return `${message}*${checksum}\r\n`;
 }
 
-// Load coordinates at startup
-loadGeoJSON(GEOJSON_INPUT_PATH);
-
-// Create TCP server
-const server = new Server();
-const connectedSockets: Socket[] = [];
-
-// Function to clear console and show current status - defined at global level
-const clearAndShowStatus = (message: string) => {
+// UI utils
+function clearAndShowStatus(message: string = ""): void {
   console.clear();
   console.log(`NMEA GGA simulator running on port ${PORT}`);
   console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
 
-  // Show current status
   console.log(`\nStatus: ${paused ? "⏸️ PAUSED" : "▶️ PLAYING"}`);
   console.log(`Speed: ${speedFactor.toFixed(2)}x`);
   console.log(`Connected clients: ${connectedSockets.length}`);
 
-  // Display command menu
   console.log("\n=== Interactive Commands ===");
   console.log("p - Play (start sending GPS data)");
   console.log("s - Stop (pause sending GPS data)");
@@ -306,33 +297,25 @@ const clearAndShowStatus = (message: string) => {
   console.log("↓ - Slow down GPS data");
   console.log("===========================\n");
 
-  // Show message if provided
   if (message) {
     console.log(`${message}\n`);
   }
+}
 
-  console.log("fgps> ");
-};
-
-// Handle client connections
-server.on("connection", (socket: Socket) => {
+// Socket handling
+function handleSocketConnection(socket: Socket): void {
   console.log("Client connected");
-
-  // Add socket to connected sockets array
-  connectedSockets.push(socket);
-
-  // A flag that tells whether the message stream is paused.
+  const extSocket = socket as ExtendedSocket;
+  connectedSockets.push(extSocket);
 
   let ggaIntervalId: NodeJS.Timer;
   let bestposIntervalId: NodeJS.Timer;
 
-  // Function to update timer intervals based on speed factor
-  const updateIntervals = () => {
-    // Clear existing intervals
+  // Setup intervals for sending GPS data
+  const updateIntervals = (): void => {
     clearInterval(ggaIntervalId);
     clearInterval(bestposIntervalId);
 
-    // Set new intervals with adjusted timing
     ggaIntervalId = setInterval(() => {
       if (!paused) {
         const ggaData = getFakeGGAData();
@@ -353,17 +336,13 @@ server.on("connection", (socket: Socket) => {
     }, Math.round(BESTPOS_UPDATE_INTERVAL / speedFactor));
   };
 
-  // Add updateIntervals function to socket for external access
-  (socket as any)._updateIntervals = updateIntervals;
-
-  // Initialize intervals
+  extSocket._updateIntervals = updateIntervals;
   updateIntervals();
 
-  // Listen for commands (play/pause) from the client.
-  socket.on("data", (data: Buffer) => {
+  // Handle client commands
+  socket.on("data", (data: Buffer): void => {
     const command = data.toString().trim().toLowerCase();
 
-    // Update UI to show received command
     if (connectedSockets.length > 0) {
       clearAndShowStatus(`Received command from client: ${command}`);
     }
@@ -379,58 +358,42 @@ server.on("connection", (socket: Socket) => {
     }
   });
 
-  socket.on("close", () => {
+  // Handle socket disconnection
+  socket.on("close", (): void => {
     console.log("Client disconnected");
     clearInterval(ggaIntervalId);
     clearInterval(bestposIntervalId);
 
-    // Remove socket from connected sockets array
-    const index = connectedSockets.indexOf(socket);
+    const index = connectedSockets.indexOf(extSocket);
     if (index !== -1) {
       connectedSockets.splice(index, 1);
     }
   });
 
-  socket.on("error", (err: Error) => {
+  socket.on("error", (err: Error): void => {
     console.error("Socket error:", err.message);
     clearInterval(ggaIntervalId);
     clearInterval(bestposIntervalId);
   });
-});
+}
 
-server.on("error", (err: Error) => {
-  console.error("Server error:", err.message);
-});
-
-server.listen(PORT, HOST, () => {
-  console.log(`NMEA GGA simulator running on port ${PORT}`);
-  console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
-
-  const { networkInterfaces } = require("os");
-  const nets = networkInterfaces();
-
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (!net.internal && net.family === "IPv4") {
-        console.log(`  ${net.address}:${PORT}`);
+// Update all client intervals when speed changes
+function updateAllClientIntervals(): void {
+  if (connectedSockets.length > 0) {
+    connectedSockets.forEach((socket) => {
+      if (socket._updateIntervals) {
+        socket._updateIntervals();
       }
-    }
+    });
   }
+}
 
-  // Set up interactive terminal
-  console.log("\n=== Interactive Commands ===");
-  console.log("p - Play (start sending GPS data)");
-  console.log("s - Stop (pause sending GPS data)");
-  console.log("q - Quit the application");
-  console.log("↑ - Speed up GPS data");
-  console.log("↓ - Slow down GPS data");
-  console.log("===========================\n");
-
-  // Create readline interface
+// Interactive UI handling
+function setupInteractiveUI(server: Server): void {
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: "fgps> ",
+    prompt: "",
   });
 
   // Enable keypress events
@@ -439,45 +402,20 @@ server.listen(PORT, HOST, () => {
     process.stdin.setRawMode(true);
   }
 
-  // Reference the global clearAndShowStatus function
-  const localClearAndShowStatus = (message: string) => {
-    // Call the global function
+  const localClearAndShowStatus = (message: string): void => {
     clearAndShowStatus(message);
-    // Ensure the prompt is displayed
     rl.prompt();
   };
 
-  // Handle keypress events for all key commands
-  process.stdin.on("keypress", (str, key) => {
+  // Handle keypress events
+  process.stdin.on("keypress", (str, key): void => {
     if (key.name === "up") {
-      speedFactor = Math.min(speedFactor * 1.25, 4.0);
-
-      // Update all connected clients with new speed
-      if (connectedSockets.length > 0) {
-        connectedSockets.forEach((clientSocket) => {
-          // Force update intervals on all clients
-          const socketAsAny = clientSocket as any;
-          if (socketAsAny._updateIntervals) {
-            socketAsAny._updateIntervals();
-          }
-        });
-      }
-
+      speedFactor = Math.min(speedFactor * 1.25, MAX_SPEED_FACTOR);
+      updateAllClientIntervals();
       localClearAndShowStatus(`Speed increased to ${speedFactor.toFixed(2)}x`);
     } else if (key.name === "down") {
-      speedFactor = Math.max(speedFactor * 0.8, 0.25);
-
-      // Update all connected clients with new speed
-      if (connectedSockets.length > 0) {
-        connectedSockets.forEach((clientSocket) => {
-          // Force update intervals on all clients
-          const socketAsAny = clientSocket as any;
-          if (socketAsAny._updateIntervals) {
-            socketAsAny._updateIntervals();
-          }
-        });
-      }
-
+      speedFactor = Math.max(speedFactor * 0.8, MIN_SPEED_FACTOR);
+      updateAllClientIntervals();
       localClearAndShowStatus(`Speed decreased to ${speedFactor.toFixed(2)}x`);
     } else if (str === "p") {
       paused = false;
@@ -495,7 +433,6 @@ server.listen(PORT, HOST, () => {
       console.log("Exiting FGPS simulator");
       process.exit();
     } else {
-      // For any other key, just refresh the display
       localClearAndShowStatus("");
     }
   });
@@ -503,12 +440,60 @@ server.listen(PORT, HOST, () => {
   // Initial status display
   localClearAndShowStatus("System ready");
 
-  // Just handle empty lines and any other characters
-  rl.on("line", (line) => {
-    // Clear screen and show status on any Enter key press
+  // Handle empty lines
+  rl.on("line", (): void => {
     localClearAndShowStatus("");
-  }).on("close", () => {
+  }).on("close", (): void => {
     console.log("Exiting FGPS simulator");
     process.exit(0);
   });
-});
+}
+
+// Display available network interfaces
+function displayNetworkInterfaces(): void {
+  const nets = networkInterfaces();
+
+  for (const name of Object.keys(nets)) {
+    const interfaces = nets[name];
+    if (interfaces) {
+      for (const net of interfaces) {
+        if (!net.internal && net.family === "IPv4") {
+          console.log(`  ${net.address}:${PORT}`);
+        }
+      }
+    }
+  }
+}
+
+// Main function
+function main(): void {
+  // Load coordinates from GeoJSON file
+  loadGeoJSON(GEOJSON_INPUT_PATH);
+
+  // Create and configure TCP server
+  const server = new Server();
+
+  server.on("connection", handleSocketConnection);
+
+  server.on("error", (err: Error): void => {
+    console.error("Server error:", err.message);
+  });
+
+  // Start the server
+  server.listen(PORT, HOST, (): void => {
+    console.log(`NMEA GGA simulator running on port ${PORT}`);
+    console.log(`GeoJSON path: ${GEOJSON_INPUT_PATH}`);
+
+    displayNetworkInterfaces();
+
+    // Set up interactive command interface
+    setupInteractiveUI(server);
+  });
+}
+
+// Start the application only when this file is directly executed (not imported)
+// if (import.meta.url === Bun.main) {
+//   main();
+// }
+
+main();

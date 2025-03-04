@@ -33,4 +33,19 @@ When connected to the TCP server, clients can send:
 - `play` - Resume GPS data stream
 - `pause` - Pause GPS data stream
 
-This project was created using `bun init` in bun v1.1.42. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+## Testing
+
+The project includes unit tests for all key components. To run tests:
+
+```bash
+bun test
+```
+
+## Development Scripts
+
+- `bun run start` - Start the application with hot reloading
+- `bun test` - Run the test suite
+- `bun --bun tsc --noEmit` - Run TypeScript type checking
+- `bun run nuke` - Clean and reinstall dependencies
+
+This project uses [Bun](https://bun.sh), a fast all-in-one JavaScript runtime.
