@@ -12,7 +12,6 @@ const IndividualEventSchema = z.tuple([
   z.number(), // duration of the event in hours
   z.array(z.number()).optional(), // optional location coordinates [longitude, latitude]
   z.array(EventActivitySchema), // array of activities that occurred during this event
-  z.string().optional(), // event ID
 ]);
 
 // Define the main event schema
@@ -21,7 +20,6 @@ const EventSchema = z.object({
   severity: z.string(),
   totalDuration: z.number(),
   individualEvents: z.array(IndividualEventSchema),
-  eventId: z.string(), // Added event ID field
 });
 
 const RootSchema = z.array(EventSchema);
@@ -51,11 +49,9 @@ async function testQuery(swarmbotIDs: string[] = ["sb-0130", "sb-0026"]) {
               (
                   individualEventDuration,
                   location,
-                  individualEventDurationByState,
-                  downtimeEventID
+                  individualEventDurationByState
               )
-          ) AS individualEvents,
-          any(event.id) AS eventId
+          ) AS individualEvents
       FROM
           (
               SELECT
@@ -126,5 +122,3 @@ async function testQuery(swarmbotIDs: string[] = ["sb-0130", "sb-0026"]) {
     );
   }
 }
-
-testQuery();

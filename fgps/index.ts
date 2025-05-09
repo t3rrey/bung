@@ -10,6 +10,31 @@ import { type GGAPacket } from "nmea-simple";
 import { networkInterfaces } from "os";
 import * as readline from "readline";
 import { createInterface } from "readline";
+import { z } from "zod";
+
+// Zod Schemas
+export const StateDurationSchema = z.object({
+    state: z.string(),
+    durationHr: z.number()
+});
+
+export const IndividualEventSchema = z.object({
+    individualEventDuration: z.number(),
+    location: z.string(),
+    individualEventDurationByState: z.array(StateDurationSchema)
+});
+
+export const DowntimeEventDataSchema = z.object({
+    eventMessage: z.string(),
+    severity: z.enum(["Expected", "Unexpected"]),
+    totalDuration: z.number(),
+    individualEvents: z.array(IndividualEventSchema)
+});
+
+// TypeScript Types (derived from Zod schemas)
+export type StateDuration = z.infer<typeof StateDurationSchema>;
+export type IndividualEvent = z.infer<typeof IndividualEventSchema>;
+export type DowntimeEventData = z.infer<typeof DowntimeEventDataSchema>;
 
 // Constants
 export const PORT = 3006;
